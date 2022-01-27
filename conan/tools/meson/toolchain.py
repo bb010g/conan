@@ -50,7 +50,7 @@ class MesonToolchain(object):
     c_link_args = {{c_link_args}}
     cpp_args = {{cpp_args}} + preprocessor_definitions
     cpp_link_args = {{cpp_link_args}}
-    {% if pkg_config_path %}pkg_config_path = '{{pkg_config_path}}'{% endif %}
+    {% if pkg_config_path %}pkg_config_path = {{pkg_config_path}}{% endif %}
 
     {% for context, values in cross_build.items() %}
     [{{context}}_machine]
@@ -98,7 +98,7 @@ class MesonToolchain(object):
 
         self.project_options = {}
         self.preprocessor_definitions = {}
-        self.pkg_config_path = self._conanfile.generators_folder
+        self.pkg_config_path = [self._conanfile.generators_folder]
 
         check_using_build_profile(self._conanfile)
 
@@ -219,7 +219,7 @@ class MesonToolchain(object):
             "c_link_args": to_meson_value(self.c_link_args.strip().split()),
             "cpp_args": to_meson_value(self.cpp_args.strip().split()),
             "cpp_link_args": to_meson_value(self.cpp_link_args.strip().split()),
-            "pkg_config_path": self.pkg_config_path,
+            "pkg_config_path": to_meson_value(self.pkg_config_path),
             "preprocessor_definitions": self.preprocessor_definitions,
             "cross_build": self.cross_build
         }
