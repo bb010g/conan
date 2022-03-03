@@ -1,3 +1,4 @@
+import os
 import subprocess
 
 from conan.tools.env import Environment
@@ -36,7 +37,7 @@ class PkgConfig:
 
     @property
     def includedirs(self):
-        return [include[2:] for include in self._get_option('cflags-only-I').split()]
+        return [self.unprefix(include[2:]) for include in self._get_option('cflags-only-I').split()]
 
     @property
     def cflags(self):
@@ -50,11 +51,11 @@ class PkgConfig:
 
     @property
     def libdirs(self):
-        return [lib[2:] for lib in self._get_option('libs-only-L').split()]
+        return [self.unprefix(lib[2:]) for lib in self._get_option('libs-only-L').split()]
 
     @property
     def libs(self):
-        return [lib[2:] for lib in self._get_option('libs-only-l').split()]
+        return [self.unprefix(lib[2:]) for lib in self._get_option('libs-only-l').split()]
 
     @property
     def linkflags(self):
@@ -76,6 +77,13 @@ class PkgConfig:
             for name in variable_names:
                 self._variables[name] = self._parse_output('variable=%s' % name)
         return self._variables
+
+    @property
+    def prefix(self):
+        return self.variables["prefix"]
+
+    def unprefix(self, path):
+        return path.removeprefix(os.path.join(self.prefix, ''))
 
     def fill_cpp_info(self, cpp_info, is_system=True, system_libs=None):
         if not self.provides:
