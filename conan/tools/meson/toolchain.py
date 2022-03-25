@@ -1,3 +1,4 @@
+import os
 import textwrap
 
 from jinja2 import Template
@@ -6,6 +7,7 @@ from conan.tools._check_build_profile import check_using_build_profile
 from conan.tools.apple.apple import to_apple_arch, is_apple_os, apple_min_version_flag
 from conan.tools.build.cross_building import cross_building, get_cross_building_settings
 from conan.tools.env import VirtualBuildEnv
+from conan.tools.files.files import load_toolchain_args
 from conan.tools.meson.helpers import *
 from conan.tools.microsoft import VCVars, msvc_runtime_flag
 from conans.errors import ConanException
@@ -16,43 +18,49 @@ class MesonToolchain(object):
     native_filename = "conan_meson_native.ini"
     cross_filename = "conan_meson_cross.ini"
 
-    _meson_file_template = textwrap.dedent("""
+    _meson_file_template = textwrap.dedent("""\
     [constants]
     preprocessor_definitions = [{% for it, value in preprocessor_definitions.items() -%}
     '-D{{ it }}="{{ value}}"'{%- if not loop.last %}, {% endif %}{% endfor %}]
 
+    [binaries]
+    {% if c %}c = {{c}}
+    {% endif %}{% if cpp %}cpp = {{cpp}}
+    {% endif %}{% if c_ld %}c_ld = {{c_ld}}
+    {% endif %}{% if cpp_ld %}cpp_ld = {{cpp_ld}}
+    {% endif %}{% if ar %}ar = {{ar}}
+    {% endif %}{% if strip %}strip = {{strip}}
+    {% endif %}{% if as %}as = {{as}}
+    {% endif %}{% if windres %}windres = {{windres}}
+    {% endif %}{% if pkgconfig %}pkgconfig = {{pkgconfig}}
+    {% endif %}
+    [properties]
+    {% for it, value in properties.items() -%}
+    {{it}} = {{value}}
+    {% endfor %}
+    [cmake]
+    {% for it, value in cmake_variables.items() -%}
+    {{it}} = {{value}}
+    {% endfor %}
     [project options]
     {% for it, value in project_options.items() -%}
     {{it}} = {{value}}
     {% endfor %}
-
-    [binaries]
-    {% if c %}c = '{{c}}'{% endif %}
-    {% if cpp %}cpp = '{{cpp}}'{% endif %}
-    {% if c_ld %}c_ld = '{{c_ld}}'{% endif %}
-    {% if cpp_ld %}cpp_ld = '{{cpp_ld}}'{% endif %}
-    {% if ar %}ar = '{{ar}}'{% endif %}
-    {% if strip %}strip = '{{strip}}'{% endif %}
-    {% if as %}as = '{{as}}'{% endif %}
-    {% if windres %}windres = '{{windres}}'{% endif %}
-    {% if pkgconfig %}pkgconfig = '{{pkgconfig}}'{% endif %}
-
     [built-in options]
-    {% if buildtype %}buildtype = '{{buildtype}}'{% endif %}
-    {% if debug %}debug = {{debug}}{% endif %}
-    {% if default_library %}default_library = '{{default_library}}'{% endif %}
-    {% if b_vscrt %}b_vscrt = '{{b_vscrt}}' {% endif %}
-    {% if b_ndebug %}b_ndebug = {{b_ndebug}}{% endif %}
-    {% if b_staticpic %}b_staticpic = {{b_staticpic}}{% endif %}
-    {% if cpp_std %}cpp_std = '{{cpp_std}}' {% endif %}
-    {% if backend %}backend = '{{backend}}' {% endif %}
-    c_args = {{c_args}} + preprocessor_definitions
+    {% if backend %}backend = {{backend}}
+    {% endif %}{% if buildtype %}buildtype = {{buildtype}}
+    {% endif %}{% if debug %}debug = {{debug}}
+    {% endif %}{% if default_library %}default_library = {{default_library}}
+    {% endif %}{% if pkg_config_path %}pkg_config_path = {{pkg_config_path}}
+    {% endif %}{% if b_ndebug %}b_ndebug = {{b_ndebug}}
+    {% endif %}{% if b_staticpic %}b_staticpic = {{b_staticpic}}
+    {% endif %}{% if b_vscrt %}b_vscrt = {{b_vscrt}}
+    {% endif %}c_args = {{c_args}} + preprocessor_definitions
     c_link_args = {{c_link_args}}
     cpp_args = {{cpp_args}} + preprocessor_definitions
     cpp_link_args = {{cpp_link_args}}
-    {% if pkg_config_path %}pkg_config_path = '{{pkg_config_path}}'{% endif %}
-
-    {% for context, values in cross_build.items() %}
+    {% if cpp_std %}cpp_std = {{cpp_std}}
+    {% endif %}{% for context, values in cross_build.items() %}
     [{{context}}_machine]
     system = '{{values["system"]}}'
     cpu_family = '{{values["cpu_family"]}}'
@@ -61,8 +69,9 @@ class MesonToolchain(object):
     {% endfor %}
     """)
 
-    def __init__(self, conanfile, backend=None):
+    def __init__(self, conanfile, backend=None, cmake_namespace=None):
         self._conanfile = conanfile
+        self._cmake_namespace = cmake_namespace
         # Values are kept as Python built-ins so users can modify them more easily, and they are
         # only converted to Meson file syntax for rendering
         # priority: first user conf, then recipe, last one is default "ninja"
@@ -96,9 +105,21 @@ class MesonToolchain(object):
         else:
             self._b_vscrt = None
 
+        self.properties = {}
+        if self._cmake_namespace is not None:
+            cmake_toolchain_args = load_toolchain_args(
+                generators_folder=self._conanfile.generators_folder,
+                namespace=self._cmake_namespace,
+            )
+            if "cmake_toolchain_file" in cmake_toolchain_args:
+                cmake_toolchain_file = cmake_toolchain_args["cmake_toolchain_file"]
+                if not os.path.isabs(cmake_toolchain_file):
+                    cmake_toolchain_file = os.path.join(self._conanfile.generators_folder, cmake_toolchain_file)
+                self.properties["cmake_toolchain_file"] = cmake_toolchain_file
+        self.cmake_variables = {}
         self.project_options = {}
         self.preprocessor_definitions = {}
-        self.pkg_config_path = self._conanfile.generators_folder
+        self.pkg_config_path = [self._conanfile.generators_folder]
 
         check_using_build_profile(self._conanfile)
 
@@ -190,37 +211,44 @@ class MesonToolchain(object):
 
     def _context(self):
         return {
-            # https://mesonbuild.com/Machine-files.html#project-specific-options
-            "project_options": {k: to_meson_value(v) for k, v in self.project_options.items()},
+            # https://mesonbuild.com/Machine-files.html#constants
+            "preprocessor_definitions": self.preprocessor_definitions,
+            # https://mesonbuild.com/Machine-files.html#binaries
+            "c": to_meson_value(self.c),
+            "cpp": to_meson_value(self.cpp),
+            "c_ld": to_meson_value(self.c_ld),
+            "cpp_ld": to_meson_value(self.cpp_ld),
+            "ar": to_meson_value(self.ar),
+            "strip": to_meson_value(self.strip),
+            "as": to_meson_value(self.as_),
+            "windres": to_meson_value(self.windres),
+            "pkgconfig": to_meson_value(self.pkgconfig),
+            # https://mesonbuild.com/Machine-files.html#paths-and-directories
             # https://mesonbuild.com/Builtin-options.html#directories
             # TODO : we don't manage paths like libdir here (yet?)
-            # https://mesonbuild.com/Machine-files.html#binaries
-            # https://mesonbuild.com/Reference-tables.html#compiler-and-linker-selection-variables
-            "c": self.c,
-            "cpp": self.cpp,
-            "c_ld": self.c_ld,
-            "cpp_ld": self.cpp_ld,
-            "ar": self.ar,
-            "strip": self.strip,
-            "as": self.as_,
-            "windres": self.windres,
-            "pkgconfig": self.pkgconfig,
+            # https://mesonbuild.com/Machine-files.html#properties
+            "properties": {k: to_meson_value(v) for k, v in self.properties.items()},
+            # https://mesonbuild.com/Machine-files.html#cmake-variables
+            "cmake_variables": {k: to_meson_value(v) for k, v in self.cmake_variables.items()},
+            # https://mesonbuild.com/Machine-files.html#project-specific-options
+            "project_options": {k: to_meson_value(v) for k, v in self.project_options.items()},
+            # https://mesonbuild.com/Machine-files.html#meson-builtin-options
             # https://mesonbuild.com/Builtin-options.html#core-options
-            "buildtype": self._buildtype,
-            "default_library": self._default_library,
-            "backend": self._backend,
+            "backend": to_meson_value(self._backend),
+            "buildtype": to_meson_value(self._buildtype),
+            "default_library": to_meson_value(self._default_library),
+            "pkg_config_path": to_meson_value(self.pkg_config_path),
             # https://mesonbuild.com/Builtin-options.html#base-options
-            "b_vscrt": self._b_vscrt,
-            "b_staticpic": to_meson_value(self._b_staticpic),  # boolean
             "b_ndebug": to_meson_value(self._b_ndebug),  # boolean as string
+            "b_staticpic": to_meson_value(self._b_staticpic),  # boolean
+            "b_vscrt": to_meson_value(self._b_vscrt),
             # https://mesonbuild.com/Builtin-options.html#compiler-options
-            "cpp_std": self._cpp_std,
             "c_args": to_meson_value(self.c_args.strip().split()),
             "c_link_args": to_meson_value(self.c_link_args.strip().split()),
             "cpp_args": to_meson_value(self.cpp_args.strip().split()),
             "cpp_link_args": to_meson_value(self.cpp_link_args.strip().split()),
-            "pkg_config_path": self.pkg_config_path,
-            "preprocessor_definitions": self.preprocessor_definitions,
+            "cpp_std": to_meson_value(self._cpp_std),
+            # https://mesonbuild.com/Cross-compilation.html
             "cross_build": self.cross_build
         }
 
